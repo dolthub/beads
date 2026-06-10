@@ -11,21 +11,18 @@ import (
 	"golang.org/x/term"
 )
 
-// validateCheckResult pairs a doctor check with whether it can be auto-fixed.
 type validateCheckResult struct {
 	check   doctorCheck
 	fixable bool
 }
 
-// runValidateCheck runs focused data-integrity checks and exits non-zero on failure.
-func runValidateCheck(path string) {
+func runValidateCheck(path string) error {
 	if !runValidateCheckInner(path) {
-		os.Exit(1)
+		return SilentExit()
 	}
+	return nil
 }
 
-// runValidateCheckInner runs the checks and returns true if all passed.
-// Separated from runValidateCheck so tests can call it without os.Exit.
 func runValidateCheckInner(path string) bool {
 	checks := collectValidateChecks(path)
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
@@ -37,50 +38,53 @@ Examples:
   bd vc merge feature-xyz                    # Merge feature-xyz into current branch
   bd vc merge feature-xyz --strategy ours    # Merge, preferring our changes on conflict
   bd vc merge feature-xyz --strategy theirs  # Merge, preferring their changes on conflict`,
-	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("vc-merge")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		ctx := rootCtx
 		branchName := args[0]
 
-		// Perform merge
 		conflicts, err := store.Merge(ctx, branchName)
 		if err != nil {
-			FatalErrorRespectJSON("failed to merge branch: %v", err)
+			return HandleErrorRespectJSON("failed to merge branch: %v", err)
 		}
 
-		// Handle conflicts
 		if len(conflicts) > 0 {
 			if vcMergeStrategy != "" {
-				// Auto-resolve conflicts with specified strategy
 				for _, conflict := range conflicts {
-					table := conflict.Field // Field contains table name from GetConflicts
+					table := conflict.Field
 					if table == "" {
-						table = "issues" // Default to issues table
+						table = "issues"
 					}
 					if err := store.ResolveConflicts(ctx, table, vcMergeStrategy); err != nil {
-						FatalErrorRespectJSON("failed to resolve conflicts: %v", err)
+						return HandleErrorRespectJSON("failed to resolve conflicts: %v", err)
 					}
 				}
 				if jsonOutput {
-					outputJSON(map[string]interface{}{
+					return outputJSON(map[string]interface{}{
 						"merged":        branchName,
 						"conflicts":     len(conflicts),
 						"resolved_with": vcMergeStrategy,
 					})
-					return
 				}
 				fmt.Printf("Merged %s with %d conflicts resolved using '%s' strategy\n",
 					ui.RenderAccent(branchName), len(conflicts), vcMergeStrategy)
-				return
+				return nil
 			}
 
-			// Report conflicts without auto-resolution
 			if jsonOutput {
-				outputJSON(map[string]interface{}{
+				return outputJSON(map[string]interface{}{
 					"merged":    branchName,
 					"conflicts": conflicts,
 				})
-				return
 			}
 
 			fmt.Printf("\n%s Merge completed with conflicts:\n\n", ui.RenderAccent("!!"))
@@ -88,18 +92,18 @@ Examples:
 				fmt.Printf("  - %s\n", conflict.Field)
 			}
 			fmt.Printf("\nResolve conflicts with: bd vc merge %s --strategy [ours|theirs]\n\n", branchName)
-			return
+			return nil
 		}
 
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			return outputJSON(map[string]interface{}{
 				"merged":    branchName,
 				"conflicts": 0,
 			})
-			return
 		}
 
 		fmt.Printf("Successfully merged %s\n", ui.RenderAccent(branchName))
+		return nil
 	},
 }
 
@@ -115,54 +119,60 @@ Examples:
   bd vc commit -m "Added new feature issues"
   bd vc commit --message "Fixed priority on several issues"
   echo "Multi-line message" | bd vc commit --stdin`,
-	Run: func(cmd *cobra.Command, args []string) {
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("vc-commit")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		ctx := rootCtx
 
 		if vcCommitStdin {
 			if vcCommitMessage != "" {
-				FatalErrorRespectJSON("cannot specify both --stdin and -m/--message")
+				return HandleErrorRespectJSON("cannot specify both --stdin and -m/--message")
 			}
 			b, err := io.ReadAll(os.Stdin)
 			if err != nil {
-				FatalErrorRespectJSON("failed to read commit message from stdin: %v", err)
+				return HandleErrorRespectJSON("failed to read commit message from stdin: %v", err)
 			}
 			vcCommitMessage = strings.TrimRight(string(b), "\n")
 		}
 
 		if vcCommitMessage == "" {
-			FatalErrorRespectJSON("commit message is required (use -m, --message, or --stdin)")
+			return HandleErrorRespectJSON("commit message is required (use -m, --message, or --stdin)")
 		}
 
-		// We are explicitly creating a Dolt commit; avoid redundant auto-commit in PersistentPostRun.
 		commandDidExplicitDoltCommit = true
 		if err := store.Commit(ctx, vcCommitMessage); err != nil {
 			if isDoltNothingToCommit(err) {
 				if jsonOutput {
-					outputJSON(map[string]interface{}{"committed": false, "message": "nothing to commit"})
-				} else {
-					fmt.Println("Nothing to commit")
+					return outputJSON(map[string]interface{}{"committed": false, "message": "nothing to commit"})
 				}
-				return
+				fmt.Println("Nothing to commit")
+				return nil
 			}
-			FatalErrorRespectJSON("failed to commit: %v", err)
+			return HandleErrorRespectJSON("failed to commit: %v", err)
 		}
 
-		// Get the new commit hash
 		hash, err := store.GetCurrentCommit(ctx)
 		if err != nil {
 			hash = "(unknown)"
 		}
 
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			return outputJSON(map[string]interface{}{
 				"committed": true,
 				"hash":      hash,
 				"message":   vcCommitMessage,
 			})
-			return
 		}
 
 		fmt.Printf("Created commit %s\n", ui.RenderMuted(hash[:8]))
+		return nil
 	},
 }
 
@@ -173,12 +183,21 @@ var vcStatusCmd = &cobra.Command{
 
 Examples:
   bd vc status`,
-	Run: func(cmd *cobra.Command, args []string) {
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("vc-status")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		ctx := rootCtx
 
 		currentBranch, err := store.CurrentBranch(ctx)
 		if err != nil {
-			FatalErrorRespectJSON("failed to get current branch: %v", err)
+			return HandleErrorRespectJSON("failed to get current branch: %v", err)
 		}
 
 		currentCommit, err := store.GetCurrentCommit(ctx)
@@ -187,17 +206,17 @@ Examples:
 		}
 
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			return outputJSON(map[string]interface{}{
 				"branch": currentBranch,
 				"commit": currentCommit,
 			})
-			return
 		}
 
 		fmt.Printf("\n%s Version Control Status\n\n", ui.RenderAccent("📊"))
 		fmt.Printf("  Branch: %s\n", ui.StatusInProgressStyle.Render(currentBranch))
 		fmt.Printf("  Commit: %s\n", ui.RenderMuted(currentCommit[:8]))
 		fmt.Println()
+		return nil
 	},
 }
 

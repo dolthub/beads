@@ -92,7 +92,7 @@ func IsYamlOnlyKey(key string) bool {
 	}
 
 	// Check prefix matches for nested keys
-	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation."}
+	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation.", "metrics."}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(key, prefix) {
 			return true
@@ -232,6 +232,24 @@ func SetYamlConfigInDir(beadsDir, key, value string) error {
 		return fmt.Errorf("failed to stat config.yaml: %w", err)
 	}
 
+	return setYamlConfigAtPath(configPath, key, value)
+}
+
+func SetUserYamlConfig(key, value string) error {
+	if err := validateYamlConfigValue(key, value); err != nil {
+		return err
+	}
+	configPath := UserConfigYamlPath()
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return fmt.Errorf("failed to create user config directory: %w", err)
+	}
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		if err := os.WriteFile(configPath, []byte{}, 0o644); err != nil {
+			return fmt.Errorf("failed to create user config.yaml: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to stat user config.yaml: %w", err)
+	}
 	return setYamlConfigAtPath(configPath, key, value)
 }
 

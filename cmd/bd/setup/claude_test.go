@@ -917,42 +917,33 @@ func TestRemoveClaudeScenarios(t *testing.T) {
 	})
 }
 
-func TestClaudeWrappersExit(t *testing.T) {
+func TestClaudeWrappersReturnError(t *testing.T) {
 	t.Run("install provider error", func(t *testing.T) {
-		cap := stubSetupExit(t)
 		stubClaudeEnvProvider(t, claudeEnv{}, errors.New("boom"))
-		InstallClaude(false, false)
-		if !cap.called || cap.code != 1 {
-			t.Fatal("InstallClaude should exit on provider error")
+		if err := InstallClaude(false, false); err == nil {
+			t.Fatal("InstallClaude should return error on provider error")
 		}
 	})
 
 	t.Run("install internal error", func(t *testing.T) {
-		cap := stubSetupExit(t)
 		env, _, _ := newClaudeTestEnv(t)
 		env.ensureDir = func(string, os.FileMode) error { return errors.New("boom") }
 		stubClaudeEnvProvider(t, env, nil)
-		// global=false → project-local (default)
-		InstallClaude(false, false)
-		if !cap.called || cap.code != 1 {
-			t.Fatal("InstallClaude should exit when installClaude fails")
+		if err := InstallClaude(false, false); err == nil {
+			t.Fatal("InstallClaude should return error when installClaude fails")
 		}
 	})
 
 	t.Run("check missing hooks", func(t *testing.T) {
-		cap := stubSetupExit(t)
 		env, _, _ := newClaudeTestEnv(t)
 		stubClaudeEnvProvider(t, env, nil)
-		CheckClaude()
-		if !cap.called || cap.code != 1 {
-			t.Fatal("CheckClaude should exit when hooks missing")
+		if err := CheckClaude(); err == nil {
+			t.Fatal("CheckClaude should return error when hooks missing")
 		}
 	})
 
 	t.Run("remove parse error", func(t *testing.T) {
-		cap := stubSetupExit(t)
 		env, _, _ := newClaudeTestEnv(t)
-		// Write invalid JSON to project settings path (default target)
 		path := projectSettingsPath(env.projectDir)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
@@ -961,10 +952,8 @@ func TestClaudeWrappersExit(t *testing.T) {
 			t.Fatalf("write file: %v", err)
 		}
 		stubClaudeEnvProvider(t, env, nil)
-		// global=false → project-local (default)
-		RemoveClaude(false)
-		if !cap.called || cap.code != 1 {
-			t.Fatal("RemoveClaude should exit on parse error")
+		if err := RemoveClaude(false); err == nil {
+			t.Fatal("RemoveClaude should return error on parse error")
 		}
 	})
 }

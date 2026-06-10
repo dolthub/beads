@@ -19,6 +19,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
+	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
@@ -120,7 +121,16 @@ Examples:
   bd bootstrap --json       # Output plan as JSON
   bd bootstrap --yes        # Skip confirmation prompt
 `,
-	Run: func(cmd *cobra.Command, args []string) {
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("bootstrap")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		yesFlag, _ := cmd.Flags().GetBool("yes")
 		nonInteractiveFlag, _ := cmd.Flags().GetBool("non-interactive")
@@ -150,7 +160,7 @@ Examples:
 						} else {
 							cwd, err := os.Getwd()
 							if err != nil {
-								FatalError("failed to get working directory: %v", err)
+								return HandleError("failed to get working directory: %v", err)
 							}
 							beadsDir = filepath.Join(cwd, ".beads")
 						}
@@ -160,15 +170,13 @@ Examples:
 		}
 
 		if beadsDir == "" {
-			// No .beads and no remote data — nothing to bootstrap from.
 			if jsonOutput {
 				outputJSON(noWorkspaceBootstrapPayload())
-			} else {
-				fmt.Fprintf(os.Stderr, "%s\n", activeWorkspaceNotFoundMessage())
-				fmt.Fprintf(os.Stderr, "Hint: %s\n", diagHint())
-				fmt.Fprintf(os.Stderr, "Bootstrap is for existing projects that need database setup.\n")
+				return SilentExit()
 			}
-			os.Exit(1)
+			fmt.Fprintf(os.Stderr, "Hint: %s\n", diagHint())
+			fmt.Fprintf(os.Stderr, "Bootstrap is for existing projects that need database setup.\n")
+			return HandleError("%s", activeWorkspaceNotFoundMessage())
 		}
 
 		// Load config from .beads/metadata.json. When the beadsDir was
@@ -187,7 +195,7 @@ Examples:
 
 		resolvedCfg, repairMsg, err := applyBootstrapMetadataRepair(beadsDir, cfg, !dryRun)
 		if err != nil {
-			FatalError("failed to reconcile shared-server metadata: %v", err)
+			return HandleError("failed to reconcile shared-server metadata: %v", err)
 		}
 		if resolvedCfg != nil {
 			cfg = resolvedCfg
@@ -199,7 +207,7 @@ Examples:
 		if jsonOutput {
 			outputJSON(plan)
 			if plan.Action == "none" || dryRun {
-				return
+				return nil
 			}
 		} else {
 			if repairMsg != "" {
@@ -207,14 +215,14 @@ Examples:
 			}
 			printBootstrapPlan(plan)
 			if plan.Action == "none" || dryRun {
-				return
+				return nil
 			}
 		}
 
-		// Execute the plan
 		if err := executeBootstrapPlan(plan, cfg, nonInteractive); err != nil {
-			FatalError("Bootstrap failed: %v", err)
+			return HandleError("Bootstrap failed: %v", err)
 		}
+		return nil
 	},
 }
 

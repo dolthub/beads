@@ -19,6 +19,7 @@ import (
 	internalbeads "github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/linear"
+	"github.com/steveyegge/beads/internal/metrics"
 )
 
 var (
@@ -99,9 +100,16 @@ Config options:
 	- Place a .beads/PRIME.md file in the local clone or resolved workspace to override the default output entirely.
 	- Use --export to dump the default content for customization.
 	- Use --memories-only for hook contexts that should inject only persistent memories.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		// emit writes content either as raw text (default behavior) or wrapped
-		// in the SessionStart hook JSON envelope when --hook-json is set.
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("prime")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		emit := func(content string) {
 			if primeHookJSONMode {
 				_ = outputHookJSON(os.Stdout, content)
@@ -110,26 +118,18 @@ Config options:
 			}
 		}
 
-		// Resolve the active beads workspace.
 		beadsDir := beads.FindBeadsDir()
 		if beadsDir == "" {
-			// Not in a beads project - silent exit with success
-			// CRITICAL: No stderr output, exit 0
-			// This enables cross-platform hook integration.
-			//
-			// Under --hook-json we still must emit a valid JSON envelope
-			// (with empty additionalContext) so the hook host receives valid JSON.
+			// Silent exit with success enables cross-platform hook integration.
+			// Under --hook-json still emit a valid empty envelope.
 			if primeHookJSONMode {
 				_ = outputHookJSON(os.Stdout, "")
 			}
-			os.Exit(0)
+			return nil
 		}
 
-		// Auto-pull from Linear if data is stale and LINEAR_API_KEY is set.
-		// Runs before orientation output so agents start with fresh data.
 		maybePullStaleLinearData(beadsDir)
 
-		// Detect MCP mode (unless overridden by flags)
 		mcpMode := isMCPActive()
 		if primeFullMode {
 			mcpMode = false
@@ -138,54 +138,41 @@ Config options:
 			mcpMode = true
 		}
 
-		// Check for stealth mode: flag OR config (GH#593)
-		// This allows users to disable git ops in session close protocol via config
 		stealthMode := primeStealthMode || config.GetBool("no-git-ops")
 
-		// Check for custom PRIME.md override (unless --export flag)
-		// This allows users to fully customize workflow instructions
-		// Check local .beads/ first (clone-specific override), then the
-		// resolved workspace location.
 		if !primeExportMode {
 			localPrimePath := filepath.Join(".beads", "PRIME.md")
 			redirectedPrimePath := filepath.Join(beadsDir, "PRIME.md")
 
-			// Try local first (user's clone-specific customization)
 			// #nosec G304 -- path is relative to cwd
 			if content, err := os.ReadFile(localPrimePath); err == nil {
 				emit(string(content))
-				return
+				return nil
 			}
-			// Fall back to redirected location (shared customization)
 			// #nosec G304 -- path is constructed from beadsDir which we control
 			if content, err := os.ReadFile(redirectedPrimePath); err == nil {
 				emit(string(content))
-				return
+				return nil
 			}
-			// Fall back to global config (~/.config/beads/PRIME.md)
 			// #nosec G304 -- path constructed from UserConfigDir which we control
 			if globalPath := resolveGlobalPrimePath(""); globalPath != "" {
 				if content, err := os.ReadFile(globalPath); err == nil {
 					emit(string(content))
-					return
+					return nil
 				}
 			}
 		}
 
-		// Output workflow context (adaptive based on MCP and stealth mode).
-		// Buffer first so we can wrap in the hook JSON envelope as a single field.
 		var buf bytes.Buffer
 		if err := outputPrimeContextWithOptions(&buf, mcpMode, stealthMode, primeMemoriesOnly); err != nil {
-			// Suppress all errors - silent exit with success.
-			// Never write to stderr (breaks Windows compatibility).
-			// Under --hook-json still emit the empty envelope so stdout
-			// is valid JSON for the hook host.
+			// Errors are suppressed by design for hook integration.
 			if primeHookJSONMode {
 				_ = outputHookJSON(os.Stdout, "")
 			}
-			os.Exit(0)
+			return nil
 		}
 		emit(buf.String())
+		return nil
 	},
 }
 

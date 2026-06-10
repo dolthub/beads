@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -66,8 +67,10 @@ EXAMPLES:
   bd import --dry-run              # Show what would be imported
   bd import --dedup                # Skip issues with duplicate titles
   bd import --json                 # Structured output with created and skipped IDs`,
-	GroupID: "sync",
-	RunE:    runImport,
+	GroupID:       "sync",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runImport,
 }
 
 var (
@@ -84,6 +87,23 @@ func init() {
 }
 
 func runImport(cmd *cobra.Command, args []string) error {
+	evt := metrics.NewCommandEvent("import")
+	defer func() {
+		if c := metrics.Global(); c != nil {
+			c.CloseEventAndAdd(evt)
+		}
+	}()
+
+	if err := runImportInner(args); err != nil {
+		if _, isExit := err.(*exitError); isExit {
+			return err
+		}
+		return HandleErrorRespectJSON("%v", err)
+	}
+	return nil
+}
+
+func runImportInner(args []string) error {
 	ctx := rootCtx
 	if importInput != "" && len(args) > 0 {
 		return fmt.Errorf("use either --input or a positional file, not both")
@@ -119,8 +139,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 	if info.Size() == 0 {
 		if jsonOutput {
-			outputJSON(importResultJSON{Source: jsonlPath})
-			return nil
+			return outputJSON(importResultJSON{Source: jsonlPath})
 		}
 		fmt.Fprintf(os.Stderr, "Empty file: %s\n", jsonlPath)
 		return nil
@@ -220,8 +239,7 @@ func runImportFromReader(ctx context.Context, r io.Reader, source string) error 
 		result.Memories = len(memories)
 		result.Skipped = dedupHits
 		if jsonOutput {
-			outputJSON(result)
-			return nil
+			return outputJSON(result)
 		}
 		fmt.Fprintf(os.Stderr, "Would import %d issues and %d memories from %s", len(issues), len(memories), source)
 		if dedupHits > 0 {
@@ -266,8 +284,7 @@ func runImportFromReader(ctx context.Context, r io.Reader, source string) error 
 	}
 
 	if jsonOutput {
-		outputJSON(result)
-		return nil
+		return outputJSON(result)
 	}
 
 	fmt.Fprintf(os.Stderr, "Imported %d issues", result.Created)

@@ -253,15 +253,10 @@ func loadEmbeddedCustomTypes() []string {
 	return config.GetCustomTypesFromYAML()
 }
 
-// createIssuesFromGraph handles `bd create --graph <plan-file>`.
-// When dryRun is true, the plan is parsed and validated but no writes occur;
-// a preview is emitted to stdout (JSON when jsonOutput is set, otherwise
-// human-readable). Unknown plan/node/edge fields are reported to stderr in
-// both modes so schema gaps are visible before any writes happen. (GH#3367)
-func createIssuesFromGraph(planFile string, dryRun bool, opts GraphApplyOptions) {
+func createIssuesFromGraph(planFile string, dryRun bool, opts GraphApplyOptions) error {
 	data, err := os.ReadFile(planFile) // #nosec G304 -- user-provided path is intentional
 	if err != nil {
-		FatalError("reading graph plan: %v", err)
+		return HandleErrorRespectJSON("reading graph plan: %v", err)
 	}
 
 	if unknown := detectUnknownGraphFields(data); len(unknown) > 0 {
@@ -270,42 +265,38 @@ func createIssuesFromGraph(planFile string, dryRun bool, opts GraphApplyOptions)
 
 	var plan GraphApplyPlan
 	if err := json.Unmarshal(data, &plan); err != nil {
-		FatalError("parsing graph plan: %v", err)
+		return HandleErrorRespectJSON("parsing graph plan: %v", err)
 	}
 
 	if err := validateGraphApplyPlan(&plan, loadEmbeddedCustomTypes()); err != nil {
-		FatalError("invalid graph plan: %v", err)
+		return HandleErrorRespectJSON("invalid graph plan: %v", err)
 	}
 
 	if dryRun {
-		emitGraphApplyDryRun(&plan)
-		return
+		return emitGraphApplyDryRun(&plan)
 	}
 
 	result, err := executeGraphApply(rootCtx, &plan, opts)
 	if err != nil {
-		FatalError("graph create: %v", err)
+		return HandleErrorRespectJSON("graph create: %v", err)
 	}
 
 	if jsonOutput {
-		outputJSON(result)
-	} else {
-		fmt.Printf("Created %d issues\n", len(result.IDs))
-		keys := make([]string, 0, len(result.IDs))
-		for key := range result.IDs {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			fmt.Printf("  %s -> %s\n", key, result.IDs[key])
-		}
+		return outputJSON(result)
 	}
+	fmt.Printf("Created %d issues\n", len(result.IDs))
+	keys := make([]string, 0, len(result.IDs))
+	for key := range result.IDs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		fmt.Printf("  %s -> %s\n", key, result.IDs[key])
+	}
+	return nil
 }
 
-// emitGraphApplyDryRun prints what `bd create --graph` would do without
-// performing any writes. Mirrors the JSON-vs-human split of the live path.
-// (GH#3367)
-func emitGraphApplyDryRun(plan *GraphApplyPlan) {
+func emitGraphApplyDryRun(plan *GraphApplyPlan) error {
 	parentDeps := 0
 	rows := make([]GraphApplyDryRunRow, 0, len(plan.Nodes))
 	for _, node := range plan.Nodes {
@@ -340,8 +331,7 @@ func emitGraphApplyDryRun(plan *GraphApplyPlan) {
 	}
 
 	if jsonOutput {
-		outputJSON(preview)
-		return
+		return outputJSON(preview)
 	}
 
 	fmt.Printf("Dry run: would create %d issue(s) and %d edge(s) (%d parent-child link(s))\n",
@@ -357,6 +347,7 @@ func emitGraphApplyDryRun(plan *GraphApplyPlan) {
 		}
 		fmt.Printf("  %s [%s] P%d %q%s\n", row.Key, row.Type, row.Priority, row.Title, parent)
 	}
+	return nil
 }
 
 func validateGraphApplyPlan(plan *GraphApplyPlan, customTypes []string) error {

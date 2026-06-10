@@ -20,6 +20,7 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/git"
+	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/templates/agents"
@@ -29,9 +30,11 @@ import (
 )
 
 var initCmd = &cobra.Command{
-	Use:     "init",
-	GroupID: "setup",
-	Short:   "Initialize bd in the current directory",
+	Use:           "init",
+	GroupID:       "setup",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Short:         "Initialize bd in the current directory",
 	Long: `Initialize bd in the current directory by creating a .beads/ directory
 and Dolt database. Optionally specify a custom issue prefix.
 
@@ -65,7 +68,11 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
   • Auto-export left at default (disabled)
   • --contributor and --team flags are rejected (wizards require interaction)
   Also auto-detected when stdin is not a terminal or CI=true is set.`,
-	Run: func(cmd *cobra.Command, _ []string) {
+	RunE: func(cmd *cobra.Command, _ []string) (retErr error) {
+		if err := ensureUserConfigExists(); err != nil {
+			WarnError("failed to bootstrap user config: %v", err)
+		}
+
 		prefix, _ := cmd.Flags().GetString("prefix")
 		quiet, _ := cmd.Flags().GetBool("quiet")
 		contributor, _ := cmd.Flags().GetBool("contributor")
@@ -118,52 +125,61 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		if os.Getenv("BEADS_DOLT_PROXIED_SERVER") == "1" {
 			initProxiedServer = true
 		}
+
+		initEvt := metrics.NewCommandEvent("init")
+		initEvt.SetAttribute("dolt_mode", resolveInitDoltMode(initProxiedServer, sharedServer, initServerMode))
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(initEvt)
+			}
+		}()
+
 		if initProxiedServer {
 			// Proxied-server mode has no local Dolt init lifecycle yet. When it
 			// is implemented, that path must mark any local .dolt/ it creates or
 			// acknowledges with doltserver.MarkDoltDirCompatible.
-			FatalError("--proxied-server is not yet implemented")
+			return fmt.Errorf("--proxied-server is not yet implemented")
 		}
 		if initProxiedServer && initServerMode {
-			FatalError("--server and --proxied-server are mutually exclusive")
+			return fmt.Errorf("--server and --proxied-server are mutually exclusive")
 		}
 		if initProxiedServer {
 			if sharedServer || externalServer ||
 				serverHost != "" || serverPort != 0 || serverSocket != "" || serverUser != "" {
-				FatalError("--proxied-server cannot be combined with --shared-server, --external, or any --server-* flag")
+				return fmt.Errorf("--proxied-server cannot be combined with --shared-server, --external, or any --server-* flag")
 			}
 		}
 		if serverConfigPath != "" {
 			if !initProxiedServer {
-				FatalError("--proxied-server-config-path requires --proxied-server")
+				return fmt.Errorf("--proxied-server-config-path requires --proxied-server")
 			}
 			if !filepath.IsAbs(serverConfigPath) {
-				FatalError("--proxied-server-config-path must be an absolute path, got %q", serverConfigPath)
+				return fmt.Errorf("--proxied-server-config-path must be an absolute path, got %q", serverConfigPath)
 			}
 			if err := validateProxiedServerConfig(serverConfigPath); err != nil {
-				FatalError("--proxied-server-config-path %v", err)
+				return fmt.Errorf("--proxied-server-config-path %v", err)
 			}
 		}
 		if serverLogPath != "" {
 			if !initProxiedServer {
-				FatalError("--proxied-server-log-path requires --proxied-server")
+				return fmt.Errorf("--proxied-server-log-path requires --proxied-server")
 			}
 			if !filepath.IsAbs(serverLogPath) {
-				FatalError("--proxied-server-log-path must be an absolute path, got %q", serverLogPath)
+				return fmt.Errorf("--proxied-server-log-path must be an absolute path, got %q", serverLogPath)
 			}
 			if err := validateProxiedServerLogPath(serverLogPath); err != nil {
-				FatalError("--proxied-server-log-path %v", err)
+				return fmt.Errorf("--proxied-server-log-path %v", err)
 			}
 		}
 		if serverRootPath != "" {
 			if !initProxiedServer {
-				FatalError("--proxied-server-root-path requires --proxied-server")
+				return fmt.Errorf("--proxied-server-root-path requires --proxied-server")
 			}
 			if !filepath.IsAbs(serverRootPath) {
-				FatalError("--proxied-server-root-path must be an absolute path, got %q", serverRootPath)
+				return fmt.Errorf("--proxied-server-root-path must be an absolute path, got %q", serverRootPath)
 			}
 			if err := validateProxiedServerRootPath(serverRootPath); err != nil {
-				FatalError("--proxied-server-root-path %v", err)
+				return fmt.Errorf("--proxied-server-root-path %v", err)
 			}
 		}
 
@@ -171,13 +187,13 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			externalUser != "" ||
 			externalTLS || externalTLSCertPath != "" || externalTLSKeyPath != "" || externalKeepAlive != 0
 		if externalProvided && !initProxiedServer {
-			FatalError("--proxied-server-external-* flags require --proxied-server")
+			return fmt.Errorf("--proxied-server-external-* flags require --proxied-server")
 		}
 		if externalProvided && serverConfigPath != "" {
-			FatalError("--proxied-server-external-* flags cannot be combined with --proxied-server-config-path (external mode has no managed dolt sql-server to configure)")
+			return fmt.Errorf("--proxied-server-external-* flags cannot be combined with --proxied-server-config-path (external mode has no managed dolt sql-server to configure)")
 		}
 		if externalProvided && debugMode {
-			FatalError("--debug cannot be combined with --proxied-server-external-* (debug applies to the managed dolt sql-server only)")
+			return fmt.Errorf("--debug cannot be combined with --proxied-server-external-* (debug applies to the managed dolt sql-server only)")
 		}
 		var externalConfig *configfile.ExternalDoltConfig
 		if externalProvided {
@@ -192,7 +208,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				KeepAlivePeriod: externalKeepAlive,
 			}
 			if err := cfg.Validate(); err != nil {
-				FatalError("--proxied-server-external-*: %v", err)
+				return fmt.Errorf("--proxied-server-external-*: %v", err)
 			}
 			externalConfig = &cfg
 		}
@@ -208,15 +224,15 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			fmt.Fprintf(os.Stderr, "To import issues from an existing JSONL export:\n")
 			fmt.Fprintf(os.Stderr, "  bd init --from-jsonl\n\n")
 			fmt.Fprintf(os.Stderr, "See: https://github.com/gastownhall/beads/blob/main/docs/DOLT.md\n")
-			os.Exit(1)
+			return fmt.Errorf("--backend=sqlite is no longer supported")
 		} else if backendFlag != "" && backendFlag != "dolt" {
-			FatalError("unknown backend %q: only \"dolt\" is supported", backendFlag)
+			return fmt.Errorf("unknown backend %q: only \"dolt\" is supported", backendFlag)
 		}
 
 		// Validate --database format early, before any side effects.
 		if database != "" {
 			if err := dolt.ValidateDatabaseName(database); err != nil {
-				FatalError("invalid database name %q: %v", database, err)
+				return fmt.Errorf("invalid database name %q: %v", database, err)
 			}
 		}
 
@@ -230,16 +246,16 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			case "maintainer", "contributor":
 				// valid
 			default:
-				FatalError("invalid --role %q: must be \"maintainer\" or \"contributor\"", roleFlag)
+				return fmt.Errorf("invalid --role %q: must be \"maintainer\" or \"contributor\"", roleFlag)
 			}
 		}
 
 		// Fail-fast: contributor/team wizards require interaction
 		if nonInteractive && contributor {
-			FatalError("--contributor requires interactive prompts and cannot be used with --non-interactive")
+			return fmt.Errorf("--contributor requires interactive prompts and cannot be used with --non-interactive")
 		}
 		if nonInteractive && team {
-			FatalError("--team requires interactive prompts and cannot be used with --non-interactive")
+			return fmt.Errorf("--team requires interactive prompts and cannot be used with --non-interactive")
 		}
 
 		// Dolt is the only supported backend
@@ -269,7 +285,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 
 		if initProxiedServer {
-			runInitProxiedServer(cmd, rootCtx, initProxiedServerInput{
+			return runInitProxiedServer(cmd, rootCtx, initProxiedServerInput{
 				prefix:            prefix,
 				database:          database,
 				roleFlag:          roleFlag,
@@ -290,7 +306,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				fromJSONL:         fromJSONL,
 				nonInteractive:    nonInteractive,
 			})
-			return
 		}
 
 		// Propagate --shared-server flag to env so that IsSharedServerMode(),
@@ -328,7 +343,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// serverMode is set above — otherwise !usesSQLServer() always returns
 		// true and incorrectly rejects server-mode names (GH#3231).
 		if database != "" && strings.ContainsRune(database, '-') && !usesSQLServer() {
-			FatalError("database name %q contains hyphens which are invalid in embedded mode; use underscores instead (e.g. %q)",
+			return fmt.Errorf("database name %q contains hyphens which are invalid in embedded mode; use underscores instead (e.g. %q)",
 				database, sanitizeDBName(database))
 		}
 
@@ -353,7 +368,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				if configPort != "" || envPort != "" {
 					detail = fmt.Sprintf("dolt.host (%s) and dolt.port are", effectiveHost)
 				}
-				FatalError("%s set via %s but server mode is not enabled.\n"+
+				return fmt.Errorf("%s set via %s but server mode is not enabled.\n"+
 					"  Embedded mode has no host/port — these settings require server mode.\n"+
 					"  Set dolt.mode: server in %s or pass --server to bd init.",
 					detail, hostSource, config.UserConfigYamlPath())
@@ -368,7 +383,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// docs/adr/0002-init-safety-invariants.md).
 		if !reinitLocal {
 			if err := checkExistingBeadsData(prefix); err != nil {
-				FatalError("%v", err)
+				return fmt.Errorf("%v", err)
 			}
 		}
 
@@ -391,7 +406,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					expected := fmt.Sprintf("destroy %d issues", count)
 					if strings.TrimSpace(scanner.Text()) != expected {
 						fmt.Fprintf(os.Stderr, "\nAborted. Database was NOT modified.\n")
-						os.Exit(ExitLocalExistsRefused)
+						return &exitError{Code: ExitLocalExistsRefused}
 					}
 				} else {
 					// Non-interactive (piped input, AI agent, etc.)
@@ -408,7 +423,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 						fmt.Fprintf(os.Stderr, "Refusing to destroy %d issues in non-interactive mode.\n", count)
 						fmt.Fprintf(os.Stderr, "  See 'bd help init-safety' for the required --destroy-token format.\n")
 						fmt.Fprintf(os.Stderr, "  Or export issue records first: bd export > issue-export.jsonl\n")
-						os.Exit(ExitDestroyTokenMissing)
+						return &exitError{Code: ExitDestroyTokenMissing}
 					}
 				}
 			}
@@ -417,7 +432,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// Handle stealth mode setup
 		if stealth {
 			if err := setupStealthMode(!quiet); err != nil {
-				FatalError("setting up stealth mode: %v", err)
+				return fmt.Errorf("setting up stealth mode: %v", err)
 			}
 
 			// In stealth mode, skip git hooks installation
@@ -444,7 +459,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			// Auto-detect from directory name
 			cwd, err := os.Getwd()
 			if err != nil {
-				FatalError("failed to get current directory: %v", err)
+				return fmt.Errorf("failed to get current directory: %v", err)
 			}
 			prefix = filepath.Base(cwd)
 		}
@@ -500,7 +515,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				})
 				if earlyDecision.Action == ActionRefuseDivergence || earlyDecision.Action == ActionRequireDestroyToken {
 					fmt.Fprintf(os.Stderr, "\n%s\n\n", earlyDecision.UserMessage)
-					os.Exit(earlyDecision.ExitCode)
+					return &exitError{Code: earlyDecision.ExitCode}
 				}
 			}
 		}
@@ -535,7 +550,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// For worktrees, .beads should always be in the main repository root
 		cwd, err := os.Getwd()
 		if err != nil {
-			FatalError("failed to get current directory: %v", err)
+			return fmt.Errorf("failed to get current directory: %v", err)
 		}
 
 		hasExplicitBeadsDir := os.Getenv("BEADS_DIR") != ""
@@ -551,7 +566,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			fmt.Fprintf(os.Stderr, "Error: cannot initialize bd inside a .beads directory\n")
 			fmt.Fprintf(os.Stderr, "Current directory: %s\n", cwd)
 			fmt.Fprintf(os.Stderr, "Please run 'bd init' from outside the .beads directory.\n")
-			os.Exit(1)
+			return &exitError{Code: 1}
 		}
 
 		initDBDir := filepath.Dir(initDBPath)
@@ -581,19 +596,19 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			if err := os.MkdirAll(beadsDir, config.BeadsDirPerm); err != nil {
 				if os.IsPermission(err) {
 					if runtime.GOOS == "windows" {
-						FatalError("failed to create .beads directory: %v\n\n"+
+						return fmt.Errorf("failed to create .beads directory: %v\n\n"+
 							"Windows Controlled Folder Access may be blocking bd.exe.\n"+
 							"To fix: Open Windows Security > Virus & threat protection >\n"+
 							"Ransomware protection > Allow an app through Controlled folder access\n"+
 							"and add bd.exe (typically %%USERPROFILE%%\\go\\bin\\bd.exe).", err)
 					} else {
-						FatalError("failed to create .beads directory: %v\n\n"+
+						return fmt.Errorf("failed to create .beads directory: %v\n\n"+
 							"Permission denied. Check directory ownership and permissions:\n"+
 							"  ls -la %s\n"+
 							"  chmod 755 %s", err, filepath.Dir(beadsDir), filepath.Dir(beadsDir))
 					}
 				}
-				FatalError("failed to create .beads directory: %v", err)
+				return fmt.Errorf("failed to create .beads directory: %v", err)
 			}
 
 			// Fix permissions on pre-existing .beads/ directories that may
@@ -661,7 +676,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		if !isGitRepo() && !hasExplicitBeadsDir {
 			gitInitCmd := exec.Command("git", "init")
 			if output, err := gitInitCmd.CombinedOutput(); err != nil {
-				FatalError("failed to initialize git repository: %v\n%s", err, output)
+				return fmt.Errorf("failed to initialize git repository: %v\n%s", err, output)
 			}
 			// Clear cached git context so subsequent operations (e.g. hook
 			// installation) see the newly-created repository (GH#2899).
@@ -678,7 +693,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		// so skip this to avoid leaving an empty .beads/dolt/ artifact (GH#2903).
 		if initServerMode {
 			if err := os.MkdirAll(initDBPath, config.BeadsDirPerm); err != nil {
-				FatalError("failed to create storage directory %s: %v", initDBPath, err)
+				return fmt.Errorf("failed to create storage directory %s: %v", initDBPath, err)
 			}
 			// Linux btrfs: disable compression on the dolt data dir to avoid
 			// kworker thrashing on the append-only write path. Best-effort; a
@@ -728,7 +743,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					fmt.Fprintf(os.Stderr, "Error: directory name %q produces an invalid database name %q.\n", dirName, dbName)
 					fmt.Fprintf(os.Stderr, "Re-run with a valid prefix: bd init --prefix <name>\n")
 					fmt.Fprintf(os.Stderr, "(Database names must start with a letter or underscore and contain only letters, digits, underscores, or hyphens.)\n")
-					os.Exit(1)
+					return &exitError{Code: 1}
 				}
 			}
 		}
@@ -780,7 +795,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				switch decision.Action {
 				case ActionRefuseDivergence, ActionRequireDestroyToken:
 					fmt.Fprintf(os.Stderr, "\n%s\n\n", decision.UserMessage)
-					os.Exit(decision.ExitCode)
+					return &exitError{Code: decision.ExitCode}
 				case ActionBootstrap:
 					syncFromRemote = true
 				case ActionProceedWithDivergence:
@@ -795,7 +810,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 						scanner.Scan()
 						if strings.TrimSpace(scanner.Text()) != expected {
 							fmt.Fprintf(os.Stderr, "\nAborted. See 'bd help init-safety' for details.\n")
-							os.Exit(ExitDestroyTokenMissing)
+							return &exitError{Code: ExitDestroyTokenMissing}
 						}
 					}
 					// Race-safety: re-verify the remote state hasn't
@@ -805,7 +820,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					// overwriting their fresh work.
 					if gitOriginHasDoltDataRef() != remoteHasDoltData {
 						fmt.Fprintf(os.Stderr, "\nAborted: remote state changed during confirmation. Re-run to re-verify intent.\n")
-						os.Exit(ExitRemoteDivergenceRefused)
+						return &exitError{Code: ExitRemoteDivergenceRefused}
 					}
 					// Proceed without bootstrap; remote will be overwritten on next push.
 					// syncFromRemote stays false.
@@ -827,7 +842,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				} else {
 					fmt.Fprintf(os.Stderr, "Error: failed to clone remote %q: %v\n", syncURL, err)
 					fmt.Fprintf(os.Stderr, "Hint: verify the URL is reachable and any credentials are valid, or omit --remote to initialize a fresh local database.\n")
-					os.Exit(1)
+					return &exitError{Code: 1}
 				}
 			} else {
 				bootstrappedFromRemote = true
@@ -884,7 +899,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		initLock, err := acquireEmbeddedLock(beadsDir, initServerMode || initProxiedServer)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return &exitError{Code: 1}
 		}
 		defer initLock.Unlock()
 
@@ -907,7 +922,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				if state == nil || !state.Running {
 					if _, startErr := doltserver.Start(sharedDir); startErr != nil {
 						fmt.Fprintf(os.Stderr, "Error: failed to start shared Dolt server: %v\n", startErr)
-						os.Exit(1)
+						return &exitError{Code: 1}
 					}
 					if !quiet {
 						fmt.Printf("  %s Shared Dolt server started\n", ui.RenderPass("✓"))
@@ -944,7 +959,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		store, err := newDoltStore(ctx, doltCfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to open Dolt store: %v\n", err)
-			os.Exit(1)
+			return &exitError{Code: 1}
 		}
 
 		// Initialize global database schema and config in shared-server mode.
@@ -977,7 +992,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			issuePrefix := strings.ReplaceAll(prefix, ".", "_")
 			if err := store.SetConfig(ctx, "issue_prefix", issuePrefix); err != nil {
 				_ = store.Close()
-				FatalError("failed to set issue prefix: %v", err)
+				return fmt.Errorf("failed to set issue prefix: %v", err)
 			}
 		}
 
@@ -1139,7 +1154,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			// Dolt, not JSONL, is the cross-machine sync path. Plain git
 			// origins are valid here: the first push creates refs/dolt/data.
 			if err := persistInitSyncRemote(beadsDir, initRemote, syncURL, syncFromRemote, syncURLFromConfig, syncURLFromGitOrigin); err != nil {
-				FatalError("failed to persist sync.remote to config.yaml: %v", err)
+				return fmt.Errorf("failed to persist sync.remote to config.yaml: %v", err)
 			}
 
 			// Enable shared server mode if requested via flag OR env var (GH#2377).
@@ -1194,12 +1209,12 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			localJSONLPath := configuredImportJSONLPath(beadsDir)
 			if _, statErr := os.Stat(localJSONLPath); os.IsNotExist(statErr) {
 				_ = store.Close()
-				FatalError("--from-jsonl specified but %s does not exist", localJSONLPath)
+				return fmt.Errorf("--from-jsonl specified but %s does not exist", localJSONLPath)
 			}
 			issueCount, importErr := importFromLocalJSONL(ctx, store, localJSONLPath)
 			if importErr != nil {
 				_ = store.Close()
-				FatalError("failed to import from JSONL: %v", importErr)
+				return fmt.Errorf("failed to import from JSONL: %v", importErr)
 			}
 			if !quiet {
 				fmt.Printf("  Imported %d issues from %s\n", issueCount, localJSONLPath)
@@ -1217,7 +1232,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				if isCanceled(err) {
 					fmt.Fprintln(os.Stderr, "Setup canceled.")
 					_ = store.Close()
-					exitCanceled()
+					return errCanceled()
 				}
 				// Non-fatal: warn but continue with default behavior
 				if !quiet {
@@ -1255,9 +1270,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				}
 				_ = store.Close()
 				if canceled {
-					exitCanceled()
+					return errCanceled()
 				}
-				FatalError("running contributor wizard: %v", err)
+				return fmt.Errorf("running contributor wizard: %v", err)
 			}
 
 			// Contributor setup must also pin role detection to contributor.
@@ -1278,9 +1293,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				}
 				_ = store.Close()
 				if canceled {
-					exitCanceled()
+					return errCanceled()
 				}
-				FatalError("running team wizard: %v", err)
+				return fmt.Errorf("running team wizard: %v", err)
 			}
 		}
 
@@ -1353,7 +1368,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					if err != nil {
 						if isCanceled(err) {
 							fmt.Fprintln(os.Stderr, "Setup canceled.")
-							exitCanceled()
+							return errCanceled()
 						}
 					}
 					if shouldExclude {
@@ -1372,7 +1387,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			wantExport, err := promptAutoExport()
 			if err != nil && isCanceled(err) {
 				fmt.Fprintln(os.Stderr, "Setup canceled.")
-				exitCanceled()
+				return errCanceled()
 			}
 			if wantExport {
 				if err := config.SetYamlConfig("export.auto", "true"); err != nil {
@@ -1625,6 +1640,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				fmt.Printf("\nRun %s to see details and fix these issues.\n\n", ui.RenderAccent("bd doctor --fix"))
 			}
 		}
+		return nil
 	},
 }
 
@@ -2300,4 +2316,18 @@ func initGlobalDatabaseConfig(ctx context.Context, projectCfg *dolt.Config, quie
 	if !quiet {
 		fmt.Printf("  %s Global database schema initialized\n", ui.RenderPass("✓"))
 	}
+}
+
+func resolveInitDoltMode(proxiedFlag, sharedFlag, serverFlag bool) string {
+	if proxiedFlag || os.Getenv("BEADS_DOLT_PROXIED_SERVER") == "1" {
+		return "proxied-server"
+	}
+	shared := os.Getenv("BEADS_DOLT_SHARED_SERVER")
+	if sharedFlag || shared == "1" || strings.EqualFold(shared, "true") {
+		return "shared-server"
+	}
+	if serverFlag || os.Getenv("BEADS_DOLT_SERVER_MODE") == "1" {
+		return "server"
+	}
+	return "embedded"
 }

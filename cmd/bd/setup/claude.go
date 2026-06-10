@@ -77,17 +77,12 @@ func claudeAgentsEnv(env claudeEnv) agentsEnv {
 	}
 }
 
-// InstallClaude installs Claude Code hooks
-func InstallClaude(global bool, stealth bool) {
+func InstallClaude(global bool, stealth bool) error {
 	env, err := claudeEnvProvider()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		setupExit(1)
-		return
+		return HandleError("%v", err)
 	}
-	if err := installClaude(env, global, stealth); err != nil {
-		setupExit(1)
-	}
+	return installClaude(env, global, stealth)
 }
 
 // InstallClaudeProject installs project-local Claude hooks, returning an error
@@ -281,17 +276,12 @@ func warnIfClaudeHooksUseRemovedSync(env claudeEnv) {
 	}
 }
 
-// CheckClaude checks if Claude integration is installed
-func CheckClaude() {
+func CheckClaude() error {
 	env, err := claudeEnvProvider()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		setupExit(1)
-		return
+		return HandleError("%v", err)
 	}
-	if err := checkClaude(env); err != nil {
-		setupExit(1)
-	}
+	return checkClaude(env)
 }
 
 func checkClaude(env claudeEnv) error {
@@ -321,17 +311,12 @@ func checkClaude(env claudeEnv) error {
 	return checkAgents(claudeAgentsEnv(env), claudeAgentsIntegration)
 }
 
-// RemoveClaude removes Claude Code hooks
-func RemoveClaude(global bool) {
+func RemoveClaude(global bool) error {
 	env, err := claudeEnvProvider()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		setupExit(1)
-		return
+		return HandleError("%v", err)
 	}
-	if err := removeClaude(env, global); err != nil {
-		setupExit(1)
-	}
+	return removeClaude(env, global)
 }
 
 func removeClaude(env claudeEnv, global bool) error {

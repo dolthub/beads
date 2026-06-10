@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/ado"
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/tracker"
@@ -355,6 +356,13 @@ type adoStatusResult struct {
 
 // runADOStatus implements the ado status command.
 func runADOStatus(cmd *cobra.Command, _ []string) error {
+	evt := metrics.NewCommandEvent("ado-status")
+	defer func() {
+		if c := metrics.Global(); c != nil {
+			c.CloseEventAndAdd(evt)
+		}
+	}()
+
 	cfg := getADOConfig()
 
 	if jsonOutput {
@@ -402,6 +410,13 @@ func runADOStatus(cmd *cobra.Command, _ []string) error {
 
 // runADOProjects implements the ado projects command.
 func runADOProjects(cmd *cobra.Command, _ []string) error {
+	evt := metrics.NewCommandEvent("ado-projects")
+	defer func() {
+		if c := metrics.Global(); c != nil {
+			c.CloseEventAndAdd(evt)
+		}
+	}()
+
 	cfg := getADOConfig()
 	if cfg.PAT == "" {
 		return fmt.Errorf("ado.pat not configured: set via 'bd config set ado.pat <token>' or AZURE_DEVOPS_PAT env var")
@@ -465,6 +480,13 @@ type adoSyncResult struct {
 // runADOSync implements the ado sync command.
 // Uses the tracker.Engine for all sync operations.
 func runADOSync(cmd *cobra.Command, _ []string) error {
+	evt := metrics.NewCommandEvent("ado-sync")
+	defer func() {
+		if c := metrics.Global(); c != nil {
+			c.CloseEventAndAdd(evt)
+		}
+	}()
+
 	cfg := getADOConfig()
 	if err := validateADOConfig(cfg); err != nil {
 		return err

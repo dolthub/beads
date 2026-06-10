@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -28,21 +29,27 @@ Examples:
   bd info --whats-new
   bd info --whats-new --json
   bd info --thanks`,
-	Run: func(cmd *cobra.Command, args []string) {
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evt := metrics.NewCommandEvent("info")
+		defer func() {
+			if c := metrics.Global(); c != nil {
+				c.CloseEventAndAdd(evt)
+			}
+		}()
+
 		schemaFlag, _ := cmd.Flags().GetBool("schema")
 		whatsNewFlag, _ := cmd.Flags().GetBool("whats-new")
 		thanksFlag, _ := cmd.Flags().GetBool("thanks")
 
-		// Handle --thanks flag
 		if thanksFlag {
 			printThanksPage()
-			return
+			return nil
 		}
 
-		// Handle --whats-new flag
 		if whatsNewFlag {
-			showWhatsNew()
-			return
+			return showWhatsNew()
 		}
 
 		// Get database path (absolute)
@@ -126,13 +133,10 @@ Examples:
 			}
 		}
 
-		// JSON output
 		if jsonOutput {
-			outputJSON(info)
-			return
+			return outputJSON(info)
 		}
 
-		// Human-readable output
 		fmt.Println("\nBeads Database Information")
 		fmt.Println("===========================")
 		fmt.Printf("Database: %s\n", absDBPath)
@@ -160,13 +164,13 @@ Examples:
 			}
 		}
 
-		// Check git hooks status
 		hookStatuses := CheckGitHooks()
 		if warning := FormatHookWarnings(hookStatuses); warning != "" {
 			fmt.Printf("\n%s\n", warning)
 		}
 
 		fmt.Println()
+		return nil
 	},
 }
 
@@ -1377,16 +1381,14 @@ var versionChanges = []VersionChange{
 	},
 }
 
-// showWhatsNew displays agent-relevant changes from recent versions
-func showWhatsNew() {
-	currentVersion := Version // from version.go
+func showWhatsNew() error {
+	currentVersion := Version
 
 	if jsonOutput {
-		outputJSON(map[string]interface{}{
+		return outputJSON(map[string]interface{}{
 			"current_version": currentVersion,
 			"recent_changes":  versionChanges,
 		})
-		return
 	}
 
 	// Human-readable output
@@ -1411,6 +1413,7 @@ func showWhatsNew() {
 
 	fmt.Println("💡 Tip: Use `bd info --whats-new --json` for machine-readable output")
 	fmt.Println()
+	return nil
 }
 
 func init() {

@@ -573,6 +573,12 @@ gh issue view 201
 
 **Do NOT use:** `browser_navigate`, `browser_snapshot`, or other playwright tools for GitHub PR/issue reviews unless specifically requested by the user.
 
+## Telemetry
+
+`bd` collects anonymous command-usage metrics. No email, repo path, remote URL, or user-supplied strings are collected.
+
+To disable persistently: `bd config set --global metrics.disabled true`. For a one-off override: `BD_DISABLE_METRICS=1`.
+
 ## Questions?
 
 - Check existing issues: `bd list`
