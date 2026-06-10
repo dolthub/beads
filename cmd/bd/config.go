@@ -93,7 +93,6 @@ Examples:
 }
 
 var forceGitTracked bool
-var configSetGlobal bool
 
 var configSetCmd = &cobra.Command{
 	Use:           "set <key> <value>",
@@ -139,10 +138,10 @@ var configSetCmd = &cobra.Command{
 			}
 		}
 
-		if config.IsYamlOnlyKey(key) || configSetGlobal {
+		if config.IsYamlOnlyKey(key) {
 			var setErr error
 			location := "config.yaml"
-			if configSetGlobal {
+			if config.IsUserGlobalKey(key) {
 				setErr = config.SetUserYamlConfig(key, value)
 				location = config.UserConfigYamlPath()
 			} else {
@@ -444,19 +443,27 @@ var configUnsetCmd = &cobra.Command{
 		key := args[0]
 
 		if config.IsYamlOnlyKey(key) {
-			if err := config.UnsetYamlConfig(key); err != nil {
-				return HandleError("unsetting config: %v", err)
+			location := "config.yaml"
+			var unsetErr error
+			if config.IsUserGlobalKey(key) {
+				unsetErr = config.UnsetUserYamlConfig(key)
+				location = config.UserConfigYamlPath()
+			} else {
+				unsetErr = config.UnsetYamlConfig(key)
+			}
+			if unsetErr != nil {
+				return HandleError("unsetting config: %v", unsetErr)
 			}
 
 			if jsonOutput {
 				if err := outputJSON(map[string]interface{}{
 					"key":      key,
-					"location": "config.yaml",
+					"location": location,
 				}); err != nil {
 					return err
 				}
 			} else {
-				fmt.Printf("Unset %s (in config.yaml)\n", key)
+				fmt.Printf("Unset %s (in %s)\n", key, location)
 			}
 			printConfigSideEffects(checkConfigUnsetSideEffects(key))
 			return nil
@@ -729,8 +736,14 @@ Examples:
 		}
 
 		for _, p := range yamlPairs {
-			if err := config.SetYamlConfig(p.key, p.value); err != nil {
-				return HandleError("setting config %s: %v", p.key, err)
+			var setErr error
+			if config.IsUserGlobalKey(p.key) {
+				setErr = config.SetUserYamlConfig(p.key, p.value)
+			} else {
+				setErr = config.SetYamlConfig(p.key, p.value)
+			}
+			if setErr != nil {
+				return HandleError("setting config %s: %v", p.key, setErr)
 			}
 		}
 
@@ -759,7 +772,9 @@ Examples:
 			results := make([]map[string]string, 0, len(pairs))
 			for _, p := range pairs {
 				location := "database"
-				if config.IsYamlOnlyKey(p.key) {
+				if config.IsUserGlobalKey(p.key) {
+					location = config.UserConfigYamlPath()
+				} else if config.IsYamlOnlyKey(p.key) {
 					location = "config.yaml"
 				} else if p.key == "beads.role" {
 					location = "git config"
@@ -776,7 +791,9 @@ Examples:
 		} else {
 			for _, p := range pairs {
 				location := ""
-				if config.IsYamlOnlyKey(p.key) {
+				if config.IsUserGlobalKey(p.key) {
+					location = fmt.Sprintf(" (in %s)", config.UserConfigYamlPath())
+				} else if config.IsYamlOnlyKey(p.key) {
 					location = " (in config.yaml)"
 				} else if p.key == "beads.role" {
 					location = " (in git config)"
@@ -892,7 +909,6 @@ func levenshteinDistance(a, b string) int {
 
 func init() {
 	configSetCmd.Flags().BoolVar(&forceGitTracked, "force-git-tracked", false, "Allow writing secret keys to git-tracked config files (use with caution)")
-	configSetCmd.Flags().BoolVar(&configSetGlobal, "global", false, "Write to the user-global config (~/.config/bd/config.yaml) instead of the project's .beads/config.yaml")
 	configSetManyCmd.Flags().BoolVar(&forceGitTracked, "force-git-tracked", false, "Allow writing secret keys to git-tracked config files (use with caution)")
 
 	configCmd.AddCommand(configSetCmd)

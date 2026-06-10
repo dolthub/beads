@@ -235,6 +235,38 @@ func SetYamlConfigInDir(beadsDir, key, value string) error {
 	return setYamlConfigAtPath(configPath, key, value)
 }
 
+var userGlobalKeyPrefixes = []string{"metrics."}
+
+func IsUserGlobalKey(key string) bool {
+	for _, prefix := range userGlobalKeyPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func UnsetUserYamlConfig(key string) error {
+	configPath := UserConfigYamlPath()
+	normalizedKey := normalizeYamlKey(key)
+
+	content, err := os.ReadFile(configPath) //nolint:gosec // configPath is from UserConfigYamlPath
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read user config.yaml: %w", err)
+	}
+
+	newContent := commentOutYamlKey(string(content), normalizedKey)
+
+	if err := os.WriteFile(configPath, []byte(newContent), 0o644); err != nil { //nolint:gosec // configPath is from UserConfigYamlPath
+		return fmt.Errorf("failed to write user config.yaml: %w", err)
+	}
+
+	return nil
+}
+
 func SetUserYamlConfig(key, value string) error {
 	if err := validateYamlConfigValue(key, value); err != nil {
 		return err
