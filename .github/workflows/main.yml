@@ -131,7 +131,7 @@ jobs:
         # is available; the goal here is to catch compile-time contamination,
         # not run the full suite.
         run: |
-          go test -tags gms_pure_go -count=1 -short -run '^Test(Help|CheckRemoteSafety|FormatDestroyToken|ShouldWireInitRemote|ExtractPrefix|IsNumericID|GetWorktreeGitDir|DriftItemStatuses|RunDriftChecks|IsServerProbablyRunning|CheckHooksDriftNotGitRepo|CheckServerDriftNoBeadsDir|CheckRemoteDriftNoBeadsDir)' ./cmd/bd
+          go test -tags gms_pure_go -count=1 -run '^Test(Help|CheckRemoteSafety|FormatDestroyToken|ShouldWireInitRemote|ExtractPrefix|IsNumericID|GetWorktreeGitDir|DriftItemStatuses|RunDriftChecks|IsServerProbablyRunning|CheckHooksDriftNotGitRepo|CheckServerDriftNoBeadsDir|CheckRemoteDriftNoBeadsDir)' ./cmd/bd
 
   # Fast check to ensure all version files are in sync
   check-version-consistency:
@@ -361,6 +361,9 @@ jobs:
       - name: Install Dolt
         run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
 
+      - name: Pull Dolt test container image
+        run: docker pull dolthub/dolt-sql-server:2.1.0
+
       - name: Configure Git and Dolt identity
         run: |
           git config --global user.name "CI Bot"
@@ -414,14 +417,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         include:
-          # Linux: full test suite with coverage
           - os: ubuntu-latest
             coverage: true
-            test-flags: '-v -race -short -coverprofile=coverage.out'
-          # macOS: full test suite, no coverage (faster)
+            test-flags: '-v -race -timeout=30m -coverprofile=coverage.out'
           - os: macos-latest
             coverage: false
-            test-flags: '-v -race -short'
+            test-flags: '-v -race -timeout=30m'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -474,11 +475,11 @@ jobs:
           gotestsum \
             --junitfile junit.xml \
             --format testdox \
-            -- -tags gms_pure_go -race -short -coverprofile=coverage.out -skip '^TestEmbedded' ./...
+            -- -tags gms_pure_go -race -timeout=30m -coverprofile=coverage.out ./...
 
       - name: Test
         if: ${{ !matrix.coverage }}
-        run: go test -tags gms_pure_go ${{ matrix.test-flags }} -skip '^TestEmbedded' ./...
+        run: go test -tags gms_pure_go ${{ matrix.test-flags }} ./...
 
       - name: Upload coverage to Codecov
         if: matrix.coverage && !cancelled()

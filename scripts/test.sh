@@ -38,6 +38,8 @@ RUN_PATTERN="${TEST_RUN:-}"
 COVERAGE="${TEST_COVER:-}"
 COVERPROFILE="${TEST_COVERPROFILE:-/tmp/beads.coverage.out}"
 COVERPKG="${TEST_COVERPKG:-}"
+RACE="${TEST_RACE:-1}"
+LOGFILE="${TEST_LOGFILE:-/tmp/beads-tests.log}"
 
 # Parse arguments
 PACKAGES=()
@@ -148,13 +150,19 @@ if [[ -n "$COVERAGE" ]]; then
     fi
 fi
 
+if [[ "$RACE" != "0" ]]; then
+    CMD+=(-race)
+fi
+
 CMD+=("${PACKAGES[@]}")
 
 echo "Running: ${CMD[*]}" >&2
 echo "Skipping: $SKIP_PATTERN" >&2
+echo "Logging to: $LOGFILE" >&2
 echo "" >&2
 
-"${CMD[@]}"
+set -o pipefail
+"${CMD[@]}" 2>&1 | tee "$LOGFILE"
 status=$?
 
 if [[ -n "$COVERAGE" ]]; then

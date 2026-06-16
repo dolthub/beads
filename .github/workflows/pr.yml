@@ -115,7 +115,7 @@ jobs:
         # is available; the goal here is to catch compile-time contamination,
         # not run the full suite.
         run: |
-          go test -tags gms_pure_go -count=1 -short -run '^Test(Help|CheckRemoteSafety|FormatDestroyToken|ShouldWireInitRemote|ExtractPrefix|IsNumericID|GetWorktreeGitDir|DriftItemStatuses|RunDriftChecks|IsServerProbablyRunning|CheckHooksDriftNotGitRepo|CheckServerDriftNoBeadsDir|CheckRemoteDriftNoBeadsDir)' ./cmd/bd
+          go test -tags gms_pure_go -count=1 -run '^Test(Help|CheckRemoteSafety|FormatDestroyToken|ShouldWireInitRemote|ExtractPrefix|IsNumericID|GetWorktreeGitDir|DriftItemStatuses|RunDriftChecks|IsServerProbablyRunning|CheckHooksDriftNotGitRepo|CheckServerDriftNoBeadsDir|CheckRemoteDriftNoBeadsDir)' ./cmd/bd
 
   # Fast check to ensure all version files are in sync
   check-version-consistency:
@@ -160,6 +160,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Full history so check-cli-docs-drift.sh can regenerate docs at the
+          # merge-base and only fail PRs for drift they actually introduced.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -170,9 +174,22 @@ jobs:
         run: CGO_ENABLED=0 go build -tags gms_pure_go -o bd ./cmd/bd/
 
       - name: Validate docs against CLI
+        env:
+          DOC_DRIFT_PATCH_OUT: ${{ runner.temp }}/cli-docs-freshness.patch
         run: |
           ./scripts/check-doc-flags.sh ./bd
           ./scripts/check-doc-freshness.sh
+
+      # When the drift check fails, it writes the exact regenerated-docs fix
+      # (produced with CI's canonical build) so contributors can apply it with
+      # `git apply` instead of reproducing CI's environment locally.
+      - name: Upload docs fix patch
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cli-docs-freshness-patch
+          path: ${{ runner.temp }}/cli-docs-freshness.patch
+          if-no-files-found: ignore
 
   # Fast check to catch accidental .beads/issues.jsonl changes from contributors
   check-no-beads-changes:
@@ -370,6 +387,9 @@ jobs:
 
       - name: Install Dolt
         run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+
+      - name: Pull Dolt test container image
+        run: docker pull dolthub/dolt-sql-server:2.1.0
 
       - name: Configure Git and Dolt identity
         run: |
